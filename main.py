@@ -10,7 +10,6 @@ Run with: python main.py
 
 import os
 import time
-import threading
 from datetime import datetime
 from typing import Optional
 
@@ -32,19 +31,16 @@ import llm
 
 # --- Configuration ---
 DEFAULT_ROUNDS = int(os.environ.get("ROUNDS_PER_GAME", "5"))
-DEFAULT_TIMER = int(os.environ.get("ROUND_TIMER_SECONDS", "120"))
 MAX_CAPTION_WORDS = 15
 
 
 # --- Session State (per-session data not in DB) ---
-# This holds ephemeral state like current image and timer
+# This holds ephemeral state like current image
 class SessionState:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.current_image = None
         self.current_image_url = None
-        self.round_start_time: Optional[float] = None
-        self.round_timer_seconds = DEFAULT_TIMER
         self.submissions_this_round: set = set()  # player_ids who submitted
 
 
@@ -56,9 +52,6 @@ def get_session_state(session_id: str) -> Optional[SessionState]:
     if session_id not in _session_states:
         if storage.session_exists(session_id):
             _session_states[session_id] = SessionState(session_id)
-            session = storage.get_session(session_id)
-            if session:
-                _session_states[session_id].round_timer_seconds = session['round_timer_seconds']
     return _session_states.get(session_id)
 
 
@@ -71,7 +64,7 @@ def create_new_session(host_name: str) -> tuple[str, str, str]:
     """
     session_id = storage.create_session(
         total_rounds=DEFAULT_ROUNDS,
-        round_timer=DEFAULT_TIMER
+        round_timer=0  # No timer
     )
     _session_states[session_id] = SessionState(session_id)
     
@@ -135,45 +128,52 @@ def start_round(session_id: str) -> tuple[bool, str, Optional[object]]:
     image, image_url = images.fetch_random_cat()
     state.current_image = image
     state.current_image_url = image_url
-    state.round_start_time = time.time()
     state.submissions_this_round = set()
     
     # Record round in DB
     storage.start_round(session_id, game_num, round_num, image_url)
     storage.update_session_status(session_id, 'playing')
     
-    return True, f"Round {round_num} of {session['total_rounds']} started! You have {state.round_timer_seconds} seconds.", image
+    player_count = len(storage.get_players(session_id))
+    return True, f"Round {round_num} of {session['total_rounds']} started! Waiting for {player_count} players to submit...", image
+
+
+def check_all_submitted(session_id: str) -> bool:
+    """Check if all players have submitted captions this round."""
+    state = get_session_state(session_id)
+    if not state:
+        return False
+    
+    players = storage.get_players(session_id)
+    total_players = len(players)
+    submitted_count = len(state.submissions_this_round)
+    
+    return submitted_count >= total_players and total_players > 0
 
 
 def submit_caption(
     session_id: str,
     player_id: str,
     caption: str
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
     """
     Submit a caption for the current round.
-    Returns (success, message).
+    Returns (success, message, all_submitted).
     """
     session = storage.get_session(session_id)
     if not session:
-        return False, "Session not found."
+        return False, "Session not found.", False
     
     if session['status'] != 'playing':
-        return False, "No round in progress."
+        return False, "No round in progress.", False
     
     state = get_session_state(session_id)
     if not state:
-        return False, "Session state error."
-    
-    # Check timer
-    if state.round_start_time:
-        elapsed = time.time() - state.round_start_time
-        if elapsed > state.round_timer_seconds:
-            return False, "⏰ Too late! Time's up for this round."
+        return False, "Session state error.", False
     
     # Check if already submitted
     if player_id in state.submissions_this_round:
-        return False, "You've already submitted a caption this round!"
+        return False, "You've already submitted a caption this round!", False
     
     game_num = session['current_game']
     round_num = session['current_round']
@@ -181,18 +181,27 @@ def submit_caption(
     # Enforce word limit
     words = caption.strip().split()
     if len(words) > MAX_CAPTION_WORDS:
-        return False, f"Caption too long! Maximum {MAX_CAPTION_WORDS} words."
+        return False, f"Caption too long! Maximum {MAX_CAPTION_WORDS} words.", False
     
     if len(words) == 0:
-        return False, "Please enter a caption."
+        return False, "Please enter a caption.", False
     
     # Submit
     success = storage.submit_caption(session_id, game_num, round_num, player_id, caption)
     if success:
         state.submissions_this_round.add(player_id)
-        return True, "✅ Caption submitted! Waiting for other players..."
+        
+        # Check if all players have submitted
+        all_submitted = check_all_submitted(session_id)
+        
+        if all_submitted:
+            return True, "✅ Caption submitted! All players done - scoring now...", True
+        else:
+            players = storage.get_players(session_id)
+            remaining = len(players) - len(state.submissions_this_round)
+            return True, f"✅ Caption submitted! Waiting for {remaining} more player(s)...", False
     else:
-        return False, "You've already submitted a caption this round!"
+        return False, "You've already submitted a caption this round!", False
 
 
 def end_round_and_score(session_id: str) -> tuple[bool, str, list[dict], bool]:
@@ -264,21 +273,48 @@ def start_new_game(session_id: str) -> tuple[bool, str, int]:
     if state:
         state.current_image = None
         state.current_image_url = None
-        state.round_start_time = None
         state.submissions_this_round = set()
     
     return True, f"🎮 Game {new_game_num} started! Ready for round 1.", new_game_num
 
 
-def get_time_remaining(session_id: str) -> int:
-    """Get seconds remaining in current round."""
-    state = get_session_state(session_id)
-    if not state or not state.round_start_time:
-        return 0
+def format_player_list(session_id: str, show_submission_status: bool = False) -> str:
+    """Format the player list as markdown, optionally showing submission status."""
+    if not session_id:
+        return "_No session active_"
     
-    elapsed = time.time() - state.round_start_time
-    remaining = state.round_timer_seconds - elapsed
-    return max(0, int(remaining))
+    players = storage.get_players(session_id)
+    if not players:
+        return "_No players yet_"
+    
+    state = get_session_state(session_id)
+    session = storage.get_session(session_id)
+    is_playing = session and session['status'] == 'playing'
+    
+    lines = []
+    for p in players:
+        host_badge = " 👑" if p.get('is_host') else ""
+        
+        # Show checkmark if player has submitted (only during active round)
+        if show_submission_status and is_playing and state:
+            if p['player_id'] in state.submissions_this_round:
+                status = " ✅"
+            else:
+                status = " ⏳"
+        else:
+            status = ""
+        
+        lines.append(f"- {p['name']}{host_badge}{status}")
+    
+    submitted_count = len(state.submissions_this_round) if state else 0
+    total_count = len(players)
+    
+    if show_submission_status and is_playing:
+        header = f"**{submitted_count}/{total_count} submitted:**"
+    else:
+        header = f"**{total_count} player(s):**"
+    
+    return header + "\n\n" + "\n".join(lines)
 
 
 def format_scoreboard(session_id: str) -> str:
@@ -413,8 +449,7 @@ def build_host_ui():
                         with gr.Row():
                             start_round_btn = gr.Button("▶️ Start Round", variant="primary")
                             end_round_btn = gr.Button("⏹️ End Round & Score", variant="secondary")
-                        timer_display = gr.Markdown("_Click 'Start Round' to begin_")
-                        round_status = gr.Markdown("")
+                        round_status = gr.Markdown("_Click 'Start Round' to begin_")
                     
                     # Cat image and host's caption input
                     cat_image = gr.Image(label="Current Cat", visible=False)
@@ -432,13 +467,16 @@ def build_host_ui():
                         host_caption_status = gr.Markdown("")
                 
                 with gr.Column(scale=1):
-                    # Player list
+                    # Player list with submission status (auto-refreshes every 2 seconds)
                     gr.Markdown("### 👥 Players")
                     player_list = gr.Markdown("_No players yet_")
-                    refresh_players_btn = gr.Button("🔄 Refresh Players")
+                    refresh_players_btn = gr.Button("🔄 Refresh")
                     
                     # Scoreboard
                     scoreboard_display = gr.Markdown("_Scoreboard will appear here_")
+            
+            # Auto-refresh timer (every 2 seconds during active session)
+            auto_refresh_timer = gr.Timer(value=2, active=False)
             
             # Results section
             with gr.Group():
@@ -467,7 +505,8 @@ def build_host_ui():
                     "❌ Please enter your name to start.",
                     "", "", "", "",
                     gr.update(visible=False), gr.update(visible=False),
-                    ""
+                    "",
+                    gr.Timer(active=False)  # keep timer inactive
                 )
             
             session_id, join_url, host_player_id = create_new_session(host_name)
@@ -481,18 +520,22 @@ def build_host_ui():
                 f"### ✅ Session Created!\n\nYou are **{host_name.strip()}** (Host)\n\nShare the code below with players:",
                 session_id,
                 format_scoreboard(session_id),
-                f"**1 player:**\n\n- {host_name.strip()} 👑 (Host)",
+                format_player_list(session_id, show_submission_status=False),
                 gr.update(visible=False),  # hide cat image
                 gr.update(visible=False),  # hide game over section
-                ""
+                "",
+                gr.Timer(active=True)  # activate auto-refresh timer
             )
         
         def on_start_round(session_id, host_player_id):
             if not session_id:
                 return (
-                    gr.update(), "❌ No session active.", "", 
+                    gr.update(), "", 
+                    format_player_list(session_id, show_submission_status=True) if session_id else "_No players_",
                     format_scoreboard(session_id) if session_id else "",
-                    gr.update(visible=False), "", gr.update(interactive=True)
+                    gr.update(visible=False), "",
+                    gr.update(value="", interactive=True),  # clear and enable caption input
+                    ""  # clear caption status
                 )
             
             success, msg, image = start_round(session_id)
@@ -500,35 +543,72 @@ def build_host_ui():
                 session = storage.get_session(session_id)
                 round_num = session['current_round'] if session else 0
                 total_rounds = session['total_rounds'] if session else DEFAULT_ROUNDS
-                state = get_session_state(session_id)
-                timer_secs = state.round_timer_seconds if state else DEFAULT_TIMER
                 
                 return (
                     gr.update(value=image, visible=True),
-                    f"### Round {round_num} of {total_rounds}\n\n⏱️ {timer_secs} seconds | Submit your caption!",
-                    msg,
+                    f"### Round {round_num} of {total_rounds}\n\n{msg}",
+                    format_player_list(session_id, show_submission_status=True),
                     format_scoreboard(session_id),
                     gr.update(visible=False),  # hide game over section
                     "",
-                    gr.update(interactive=True)  # enable caption input
+                    gr.update(value="", interactive=True),  # clear and enable caption input
+                    ""  # clear caption status
                 )
             return (
-                gr.update(visible=False), msg, "", 
+                gr.update(visible=False), msg,
+                format_player_list(session_id, show_submission_status=False),
                 format_scoreboard(session_id),
-                gr.update(visible=False), "", gr.update(interactive=True)
+                gr.update(visible=False), "", 
+                gr.update(value="", interactive=True),  # clear caption input
+                ""  # clear caption status
             )
         
         def on_host_submit_caption(session_id, host_player_id, caption):
             if not session_id or not host_player_id:
-                return "❌ No session active."
+                return "❌ No session active.", format_player_list(session_id, show_submission_status=True), "", "", gr.update(), ""
             
-            success, message = submit_caption(session_id, host_player_id, caption)
-            return message
+            success, message, all_submitted = submit_caption(session_id, host_player_id, caption)
+            
+            # If all players submitted, auto-score
+            if all_submitted:
+                score_success, score_msg, results, is_game_over = end_round_and_score(session_id)
+                session = storage.get_session(session_id)
+                round_num = session['current_round'] if session else 0
+                
+                if score_success:
+                    if is_game_over:
+                        return (
+                            message,
+                            format_player_list(session_id, show_submission_status=False),
+                            format_round_results(results, round_num),
+                            format_scoreboard(session_id),
+                            gr.update(visible=True),
+                            format_game_over(session_id)
+                        )
+                    return (
+                        message,
+                        format_player_list(session_id, show_submission_status=False),
+                        format_round_results(results, round_num),
+                        format_scoreboard(session_id),
+                        gr.update(visible=False),
+                        ""
+                    )
+            
+            return (
+                message,
+                format_player_list(session_id, show_submission_status=True),
+                "",
+                format_scoreboard(session_id),
+                gr.update(),
+                ""
+            )
         
         def on_end_round(session_id):
             if not session_id:
                 return (
-                    "❌ No session active.", "", 
+                    "❌ No session active.", 
+                    format_player_list(session_id, show_submission_status=False),
+                    "",
                     format_scoreboard(session_id) if session_id else "",
                     gr.update(visible=False), ""
                 )
@@ -542,6 +622,7 @@ def build_host_ui():
                 if is_game_over:
                     return (
                         "🏁 Game finished! See results below.",
+                        format_player_list(session_id, show_submission_status=False),
                         format_round_results(results, round_num),
                         format_scoreboard(session_id),
                         gr.update(visible=True),  # show game over section
@@ -550,6 +631,7 @@ def build_host_ui():
                 
                 return (
                     f"✅ {msg} Ready for next round.",
+                    format_player_list(session_id, show_submission_status=False),
                     format_round_results(results, round_num),
                     format_scoreboard(session_id),
                     gr.update(visible=False),
@@ -557,7 +639,10 @@ def build_host_ui():
                 )
             
             return (
-                msg, "", format_scoreboard(session_id),
+                msg,
+                format_player_list(session_id, show_submission_status=True),
+                "",
+                format_scoreboard(session_id),
                 gr.update(visible=False), ""
             )
         
@@ -578,34 +663,24 @@ def build_host_ui():
             return msg, gr.update(visible=True), "", format_scoreboard(session_id)
         
         def on_refresh_players(session_id):
-            if not session_id:
-                return "_No session active_"
-            
-            players = storage.get_players(session_id)
-            if not players:
-                return "_No players yet_"
-            
-            lines = []
-            for p in players:
-                host_badge = " 👑 (Host)" if p.get('is_host') else ""
-                lines.append(f"- {p['name']}{host_badge}")
-            
-            return f"**{len(players)} player(s):**\n\n" + "\n".join(lines)
+            session = storage.get_session(session_id) if session_id else None
+            is_playing = session and session['status'] == 'playing'
+            return format_player_list(session_id, show_submission_status=is_playing)
         
         def on_reset_session(session_id):
             if not session_id:
-                return "❌ No session active.", "", "", gr.update(visible=False), ""
+                return "❌ No session active.", "", "", "", gr.update(visible=False), ""
             
             storage.reset_session(session_id)
             state = get_session_state(session_id)
             if state:
                 state.current_image = None
                 state.current_image_url = None
-                state.round_start_time = None
                 state.submissions_this_round = set()
             
             return (
                 "✅ Session reset! Players remain, all scores cleared.",
+                format_player_list(session_id, show_submission_status=False),
                 "",
                 format_scoreboard(session_id),
                 gr.update(visible=False),
@@ -613,11 +688,73 @@ def build_host_ui():
             )
         
         def on_end_session(session_id):
-            if not session_id:
-                return "", ""
+            if session_id:
+                storage.update_session_status(session_id, 'finished')
             
-            storage.update_session_status(session_id, 'finished')
-            return "🚪 Session ended. Thanks for playing!", format_scoreboard(session_id)
+            # Reset UI to initial state
+            return (
+                None,  # clear session_id_state
+                None,  # clear host_player_id_state
+                gr.update(visible=True),   # show create_session_group
+                gr.update(visible=False),  # hide game_section
+                "",  # clear create_status
+                gr.Timer(active=False)  # deactivate timer
+            )
+        
+        def on_auto_refresh(session_id):
+            """Auto-refresh player list and check if all submitted."""
+            if not session_id:
+                return (
+                    format_player_list(None, show_submission_status=False),
+                    format_scoreboard(None) if session_id else "_No scores yet_",
+                    "",
+                    gr.update(visible=False),
+                    ""
+                )
+            
+            session = storage.get_session(session_id)
+            if not session:
+                return (
+                    "_No session_",
+                    "_No scores_",
+                    "",
+                    gr.update(visible=False),
+                    ""
+                )
+            
+            is_playing = session['status'] == 'playing'
+            
+            # Check if all submitted and auto-end the round
+            if is_playing and check_all_submitted(session_id):
+                score_success, score_msg, results, is_game_over = end_round_and_score(session_id)
+                round_num = session['current_round']
+                
+                if score_success:
+                    results_md = format_round_results(results, round_num)
+                    if is_game_over:
+                        return (
+                            format_player_list(session_id, show_submission_status=False),
+                            format_scoreboard(session_id),
+                            results_md,
+                            gr.update(visible=True),
+                            format_game_over(session_id)
+                        )
+                    return (
+                        format_player_list(session_id, show_submission_status=False),
+                        format_scoreboard(session_id),
+                        results_md,
+                        gr.update(visible=False),
+                        ""
+                    )
+            
+            # Normal refresh - just update player list
+            return (
+                format_player_list(session_id, show_submission_status=is_playing),
+                format_scoreboard(session_id),
+                gr.update(),  # don't change results
+                gr.update(),  # don't change game over visibility
+                gr.update()   # don't change game over display
+            )
         
         # Connect events
         create_btn.click(
@@ -628,29 +765,37 @@ def build_host_ui():
                 create_session_group, game_section,
                 create_status, session_info, session_code_display,
                 scoreboard_display, player_list,
-                cat_image, game_over_group, game_over_display
+                cat_image, game_over_group, game_over_display,
+                auto_refresh_timer
             ]
+        )
+        
+        # Auto-refresh timer for live updates
+        auto_refresh_timer.tick(
+            on_auto_refresh,
+            inputs=[session_id_state],
+            outputs=[player_list, scoreboard_display, results_display, game_over_group, game_over_display]
         )
         
         start_round_btn.click(
             on_start_round,
             inputs=[session_id_state, host_player_id_state],
             outputs=[
-                cat_image, timer_display, round_status, scoreboard_display,
-                game_over_group, game_over_display, host_caption_input
+                cat_image, round_status, player_list, scoreboard_display,
+                game_over_group, game_over_display, host_caption_input, host_caption_status
             ]
         )
         
         host_submit_btn.click(
             on_host_submit_caption,
             inputs=[session_id_state, host_player_id_state, host_caption_input],
-            outputs=[host_caption_status]
+            outputs=[host_caption_status, player_list, results_display, scoreboard_display, game_over_group, game_over_display]
         )
         
         end_round_btn.click(
             on_end_round,
             inputs=[session_id_state],
-            outputs=[round_status, results_display, scoreboard_display, game_over_group, game_over_display]
+            outputs=[round_status, player_list, results_display, scoreboard_display, game_over_group, game_over_display]
         )
         
         new_game_btn.click(
@@ -668,13 +813,17 @@ def build_host_ui():
         reset_btn.click(
             on_reset_session,
             inputs=[session_id_state],
-            outputs=[round_status, results_display, scoreboard_display, game_over_group, game_over_display]
+            outputs=[round_status, player_list, results_display, scoreboard_display, game_over_group, game_over_display]
         )
         
         end_session_btn.click(
             on_end_session,
             inputs=[session_id_state],
-            outputs=[results_display, scoreboard_display]
+            outputs=[
+                session_id_state, host_player_id_state,
+                create_session_group, game_section,
+                create_status, auto_refresh_timer
+            ]
         )
     
     return host_ui
@@ -709,29 +858,35 @@ def build_player_ui():
         
         # Game section (hidden until joined)
         with gr.Group(visible=False) as game_group:
-            player_welcome = gr.Markdown("### Welcome!")
-            game_status = gr.Markdown("_Waiting for host to start round..._")
-            
-            # Cat image and caption
-            cat_image = gr.Image(label="Caption this cat!", visible=False)
-            
             with gr.Row():
-                caption_input = gr.Textbox(
-                    label=f"Your Caption (max {MAX_CAPTION_WORDS} words)",
-                    placeholder="Write your funniest caption...",
-                    max_lines=2,
-                    interactive=True
-                )
-                submit_btn = gr.Button("📤 Submit Caption", variant="primary")
-            
-            caption_status = gr.Markdown("")
-            
-            # Scoreboard
-            gr.Markdown("---")
-            scoreboard_display = gr.Markdown("### 🏆 Scoreboard\n_Scores will appear here_")
-            
-            # Results
-            results_display = gr.Markdown("")
+                with gr.Column(scale=2):
+                    player_welcome = gr.Markdown("### Welcome!")
+                    game_status = gr.Markdown("_Waiting for host to start round..._")
+                    
+                    # Cat image and caption
+                    cat_image = gr.Image(label="Caption this cat!", visible=False)
+                    
+                    with gr.Row():
+                        caption_input = gr.Textbox(
+                            label=f"Your Caption (max {MAX_CAPTION_WORDS} words)",
+                            placeholder="Write your funniest caption...",
+                            max_lines=2,
+                            interactive=True
+                        )
+                        submit_btn = gr.Button("📤 Submit Caption", variant="primary")
+                    
+                    caption_status = gr.Markdown("")
+                    
+                    # Results
+                    results_display = gr.Markdown("")
+                
+                with gr.Column(scale=1):
+                    # Player list with submission status
+                    gr.Markdown("### 👥 Players")
+                    player_list = gr.Markdown("_No players yet_")
+                    
+                    # Scoreboard
+                    scoreboard_display = gr.Markdown("### 🏆 Scoreboard\n_Scores will appear here_")
             
             # Refresh button
             refresh_btn = gr.Button("🔄 Refresh Game State")
@@ -750,6 +905,7 @@ def build_player_ui():
                     gr.update(visible=True),   # show game group
                     f"### 👋 Welcome, {player_name.strip() or 'Anonymous'}!",
                     message,
+                    format_player_list(session_id, show_submission_status=False),
                     format_scoreboard(session_id),
                     ""
                 )
@@ -762,21 +918,48 @@ def build_player_ui():
                 "",
                 message,
                 "",
+                "",
                 ""
             )
         
         def on_submit_caption(session_id, player_id, caption):
             if not session_id or not player_id:
-                return "❌ Not in a game session."
+                return "❌ Not in a game session.", format_player_list(session_id, show_submission_status=True), "", "", gr.update()
             
-            success, message = submit_caption(session_id, player_id, caption)
-            return message
+            success, message, all_submitted = submit_caption(session_id, player_id, caption)
+            
+            # If all players submitted, trigger scoring
+            if all_submitted:
+                score_success, score_msg, results, is_game_over = end_round_and_score(session_id)
+                session = storage.get_session(session_id)
+                round_num = session['current_round'] if session else 0
+                
+                if score_success:
+                    results_md = format_round_results(results, round_num)
+                    if is_game_over:
+                        results_md += "\n\n" + format_game_over(session_id)
+                    return (
+                        "✅ All done! Scoring complete. Check results below!",
+                        format_player_list(session_id, show_submission_status=False),
+                        format_scoreboard(session_id),
+                        results_md,
+                        gr.update(interactive=False)
+                    )
+            
+            return (
+                message,
+                format_player_list(session_id, show_submission_status=True),
+                format_scoreboard(session_id),
+                "",
+                gr.update(interactive=not success)  # Disable input after successful submit
+            )
         
         def on_refresh(session_id, player_id):
             if not session_id:
                 return (
                     "_Not in a game_",
                     gr.update(visible=False),
+                    "_No players_",
                     "_No scores yet_",
                     "",
                     gr.update(interactive=True)
@@ -787,6 +970,7 @@ def build_player_ui():
                 return (
                     "_Session not found_",
                     gr.update(visible=False),
+                    "_No players_",
                     "_No scores yet_",
                     "",
                     gr.update(interactive=True)
@@ -802,6 +986,7 @@ def build_player_ui():
                 return (
                     "🚪 **Session ended.** Thanks for playing!",
                     gr.update(visible=False),
+                    format_player_list(session_id, show_submission_status=False),
                     format_scoreboard(session_id),
                     "",
                     gr.update(interactive=False)
@@ -811,6 +996,7 @@ def build_player_ui():
                 return (
                     f"🏁 **Game {game_num} Over!** Waiting for host to start new game...",
                     gr.update(visible=False),
+                    format_player_list(session_id, show_submission_status=False),
                     format_game_over(session_id),
                     "",
                     gr.update(interactive=False)
@@ -818,22 +1004,24 @@ def build_player_ui():
             
             if session['status'] == 'playing':
                 # Show current round
-                time_left = get_time_remaining(session_id)
                 has_submitted = player_id in state.submissions_this_round if state else False
+                players = storage.get_players(session_id)
+                submitted_count = len(state.submissions_this_round) if state else 0
                 
-                status_text = f"**Round {round_num} of {total_rounds}** | ⏱️ {time_left}s remaining"
+                status_text = f"**Round {round_num} of {total_rounds}** | {submitted_count}/{len(players)} submitted"
                 if has_submitted:
-                    status_text += " | ✅ Caption submitted!"
+                    status_text += " | ✅ You're done!"
                 
                 return (
                     status_text,
                     gr.update(value=state.current_image, visible=True) if state and state.current_image else gr.update(visible=False),
+                    format_player_list(session_id, show_submission_status=True),
                     format_scoreboard(session_id),
                     "",
                     gr.update(interactive=not has_submitted)
                 )
             
-            # Lobby status - show last round results if available
+            # Lobby status (between rounds) - clear caption for next round
             results_md = ""
             if round_num > 0:
                 last_results = storage.get_round_captions(session_id, game_num, round_num)
@@ -843,9 +1031,10 @@ def build_player_ui():
             return (
                 f"_Waiting for host to start round {round_num + 1} of {total_rounds}..._",
                 gr.update(visible=False),
+                format_player_list(session_id, show_submission_status=False),
                 format_scoreboard(session_id),
                 results_md,
-                gr.update(interactive=True)
+                gr.update(value="", interactive=True)  # Clear caption for next round
             )
         
         # Connect events
@@ -856,21 +1045,21 @@ def build_player_ui():
                 session_id_state, player_id_state,
                 join_group, game_group,
                 player_welcome, join_status,
-                scoreboard_display, results_display
+                player_list, scoreboard_display, results_display
             ]
         )
         
         submit_btn.click(
             on_submit_caption,
             inputs=[session_id_state, player_id_state, caption_input],
-            outputs=[caption_status]
+            outputs=[caption_status, player_list, scoreboard_display, results_display, caption_input]
         )
         
         refresh_btn.click(
             on_refresh,
             inputs=[session_id_state, player_id_state],
             outputs=[
-                game_status, cat_image,
+                game_status, cat_image, player_list,
                 scoreboard_display, results_display, caption_input
             ]
         )
@@ -896,9 +1085,9 @@ def build_app():
         **How to play:**
         1. **Host:** Go to the "Host" tab, enter your name, and start a session
         2. **Players:** Go to the "Player" tab, enter the session code, and join!
-        3. Each round, everyone (including the host!) captions the same cat picture
-        4. Gemini AI judges the captions and roasts everyone
-        5. After 5 rounds, the champion is crowned! Then start a new game!
+        3. Each round, everyone captions the same cat picture
+        4. Once ALL players submit, the AI judges and roasts everyone
+        5. After 5 rounds, the champion is crowned!
         
         ---
         """)
