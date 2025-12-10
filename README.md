@@ -1,94 +1,192 @@
-# 🐈‍⬛🎤 Cat Caption Cage Match
+# 🐈‍⬛ Cat Caption Cage Match
 
-An AI-powered party game where players write meme captions for random cat pictures and have them judged by Google's Gemini AI. Perfect for Zoom calls, parties, or any time you need some competitive cat comedy!
+_Fastest wins. Laughter guaranteed._
 
-## 🎮 How It Works
+An AI-powered party game where players write meme captions for random cat pictures and have them judged by an LLM (Gemini 2.5 Pro). Designed as a **remote-friendly icebreaker** for Scrum teams, product squads, and any group that needs five minutes of competitive cat chaos.
 
-1. **Round Start**: A random cat image appears
-2. **Caption Time**: Players write funny captions (15 words max)
-3. **AI Judgment**: Gemini rates each caption 0-10 for humor and relevance
-4. **Scoreboard**: Points accumulate across rounds
-5. **Victory**: Whoever has the most points after 5 rounds wins!
+## Perfect for:
 
-## 🚀 Quick Start
+- Remote standups and retros
+- PI planning breaks
+- Zoom / Meet / Teams socials
+- Any meeting that needs less status and more cats
 
-### Prerequisites
-- Python 3.13.4 (or compatible version)
-- Google API Key for Gemini AI
-- TheCatAPI key (optional but recommended)
+---
 
-### Installation
+## 🎮 How the Game Works
 
-1. **Activate the virtual environment:**
-   ```bash
-   source venv/bin/activate
-   ```
+1. **Host starts a session**
+   - Open the app and go to the "Host" tab
+   - Click **"Start New Session"** to create a unique session code
+   - Share the code (e.g., `ABC123`) with your team
 
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+2. **Players join**
+   - Players go to the "Player" tab
+   - Enter the session code and their display name
+   - Wait in the lobby for the round to start
 
-3. **Get your API keys:**
-   - **Google GenAI API Key**: Get it from [AI Studio](https://makersuite.google.com/app/apikey)
-   - **TheCatAPI Key**: Get it from [TheCatAPI](https://thecatapi.com/) (optional)
+3. **Round start**
+   - Host clicks **"Start Round"**
+   - Everyone sees the **same random cat image**
+   - A 45-second timer starts (configurable)
 
-### Usage
+4. **Caption time**
+   - Players submit their funniest caption (max **15 words**)
+   - One caption per player, per round
 
-Run the Cat Caption Cage Match game:
+5. **AI judgment**
+   - Host clicks **"End Round & Score"**
+   - The LLM scores each caption from **0–10** on:
+     - **Humor**
+     - **Relevance to the image**
+   - Each caption gets a Gordon Ramsay-style **roast comment** 🔥
+
+6. **Scoreboard & winner**
+   - Scores accumulate across rounds
+   - After 5 rounds, the player with the most points is crowned **Supreme Cat Meme Champion** 👑
+
+---
+
+## ⚡ Quick Start
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/your-username/Cat-Caption-Cage-Match.git
+cd Cat-Caption-Cage-Match
+```
+
+### 2. Create virtual environment
+
+```bash
+python -m venv venv
+source venv/bin/activate  # macOS/Linux
+# venv\Scripts\activate   # Windows
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configure environment
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and add your API keys:
+
+```
+GOOGLE_API_KEY=your_google_api_key_here
+THECATAPI_KEY=your_cat_api_key_here  # optional
+```
+
+Get your Google API key at: https://aistudio.google.com/apikey
+
+### 5. Run the game
+
 ```bash
 python main.py
 ```
 
-This launches a web interface that you can share with friends!
+The app will launch and provide:
+- A local URL: `http://localhost:7860`
+- A public URL: `https://xxxxx.gradio.live` (shareable!)
 
-## 🎯 Game Features
+Share the public URL with your team and start playing!
 
-- **Real-time web interface** powered by Gradio
-- **AI-powered judging** using Gemini 2.5 Pro
-- **Live scoreboard** with DuckDB backend
-- **Random cat images** from TheCatAPI
-- **Multiplayer support** - share the link with friends
-- **Mobile-friendly** interface
+---
+
+## 🧪 Testing Without API Keys
+
+Don't have a Google API key? No problem! Set fake mode in your `.env`:
+
+```
+FAKE_LLM_MODE=true
+```
+
+The game will use deterministic fake scores instead of calling the LLM. Great for testing and demos.
+
+---
+
+## 🛠️ Configuration
+
+All configuration is done via environment variables in `.env`:
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GOOGLE_API_KEY` | Yes* | - | Google Gemini API key |
+| `THECATAPI_KEY` | No | - | TheCatAPI key (higher rate limits) |
+| `FAKE_LLM_MODE` | No | `false` | Use fake scoring (no API needed) |
+| `ROUNDS_PER_GAME` | No | `5` | Number of rounds per game |
+| `ROUND_TIMER_SECONDS` | No | `45` | Seconds per round |
+
+*Not required if `FAKE_LLM_MODE=true`
+
+---
 
 ## 📁 Project Structure
 
 ```
-Cat Caption Cage Match/
-├── venv/                # Virtual environment
-├── main.py              # Cat Caption Cage Match game
+Cat-Caption-Cage-Match/
+├── main.py              # Main app - Gradio UI + game flow
+├── storage.py           # DuckDB database access
+├── images.py            # Cat image fetching
+├── llm.py               # LLM scoring + roasts
 ├── requirements.txt     # Python dependencies
-└── README.md            # This file
+├── .env.example         # Environment variable template
+├── .gitignore           # Git ignore rules
+├── README.md            # This file
+├── AGENTS.md            # AI agent instructions
+└── static/cats/         # Local fallback cat images
 ```
 
-## 🎭 Game Rules
+---
 
-- **Caption Length**: 15 words maximum
-- **Scoring**: AI rates 0-10 based on humor and relevance
-- **Rounds**: Typically 5 rounds (customizable)
-- **Players**: Unlimited (just share the web link)
-- **Judging**: AI is ruthless but fair - "Cat Meme Gordon Ramsay" style
+## 🧱 Tech Stack
 
-## 🔧 Technical Details
+- **Language:** Python 3.10+
+- **UI Framework:** [Gradio](https://gradio.app/) - Easy web UIs with public URL sharing
+- **LLM:** [Google Gemini](https://ai.google.dev/) 2.5 Pro
+- **Images:** [TheCatAPI](https://thecatapi.com) with local fallback
+- **Database:** [DuckDB](https://duckdb.org/) (in-memory)
 
-- **Frontend**: Gradio web interface
-- **Backend**: Python with DuckDB for scoring
-- **AI Model**: Google Gemini 2.5 Pro for text, Gemini Pro Vision for image analysis
-- **Image Source**: TheCatAPI for random cat pictures
-- **Deployment**: Can run locally or in Google Colab
+---
 
-## 🚨 Troubleshooting
+## 🐛 Troubleshooting
 
-- **"No API key"**: Make sure to set your `GOOGLE_API_KEY` environment variable
-- **Images not loading**: Check your internet connection or TheCatAPI key
-- **AI scoring issues**: The game includes fallback scoring to keep things moving
+### "GOOGLE_API_KEY not set"
+Make sure you've created a `.env` file with your API key. See step 4 above.
 
-## 🎉 Perfect For
+### "TheCatAPI error"
+The game will automatically fall back to a generated placeholder image. This is normal if you don't have a TheCatAPI key or have network issues.
 
-- Virtual team building
-- Zoom party games
-- Ice breakers
-- Cat lovers
-- Anyone who enjoys competitive creativity!
+### "LLM scoring failed"
+The game automatically falls back to fake scoring. Check your API key is valid.
 
-Ready to find out who's the ultimate cat caption champion? Let the cage match begin! 🏆
+### Players can't see the cat image
+Players need to click "Refresh Game State" after the host starts a round. This is a known limitation of the v1 UI.
+
+---
+
+## 🤝 Contributing
+
+This is a simple, hackable party game. PRs welcome for:
+- Bug fixes
+- UI improvements
+- New roast comment styles
+- Better mobile support
+
+Keep it simple - this is meant to be a lightweight, fun project!
+
+---
+
+## 📜 License
+
+MIT License - do whatever you want with it, just have fun! 🐱
+
+---
+
+*Built for fun, powered by cats and AI* 🐈‍⬛🎤
