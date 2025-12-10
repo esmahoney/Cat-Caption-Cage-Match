@@ -10,10 +10,12 @@ The goal: keep this repo **simple, hackable, and fun**, not enterprise-grade.
 
 ## What This Game Does
 
-- An admin/host starts a session and shares a join code with players.
+- A host starts a session (entering their name) and shares a join code with players.
 - Players join in their browser, see a random cat image, and submit short captions (max 15 words).
-- An LLM (Gemini 2.5 Pro) scores each caption on humor + relevance (0–10) and provides Gordon Ramsay-style roasts.
+- An LLM (Groq or Gemini) scores each caption on humor + creativity (0–10) and provides Gordon Ramsay-style roasts.
+- Rounds end automatically when all players have submitted.
 - Scores are persisted per session; after 5 rounds, the game declares a winner.
+- The host can start another game within the same session.
 
 For now this is a **single-repo, single-service** app. No microservices.
 
@@ -26,7 +28,7 @@ Cat-Caption-Cage-Match/
 ├── main.py              # Main entrypoint - Gradio UI + game flow
 ├── storage.py           # DuckDB database access (sessions, players, scores)
 ├── images.py            # Cat image fetching (TheCatAPI + local fallback)
-├── llm.py               # LLM scoring + roast mode (Gemini API)
+├── llm.py               # LLM scoring + roast mode (Groq/Gemini)
 ├── requirements.txt     # Python dependencies
 ├── .env.example         # Environment variable template
 ├── .gitignore           # Git ignore rules
@@ -46,7 +48,7 @@ Cat-Caption-Cage-Match/
 | `main.py` | Core entrypoint. Builds Gradio UI with Host and Player tabs. Handles game loop. |
 | `storage.py` | All database operations. Uses in-memory DuckDB. Schema: sessions, players, rounds, captions. |
 | `images.py` | Fetches random cat images from TheCatAPI. Falls back to local images or placeholder. |
-| `llm.py` | Calls Gemini to score captions. Includes `fake_llm` mode for testing without API. |
+| `llm.py` | Calls Groq (preferred) or Gemini to score captions. Includes `fake_llm` mode for testing without API. |
 
 ---
 
@@ -73,7 +75,8 @@ cp .env.example .env
 # Edit .env and add your API keys
 ```
 
-Required:
+Required (at least one):
+- `GROQ_API_KEY` - Get from https://console.groq.com/keys (recommended)
 - `GOOGLE_API_KEY` - Get from https://aistudio.google.com/apikey
 
 Optional:
@@ -83,6 +86,7 @@ Optional:
 ### 4. Run the game
 
 ```bash
+source .env  # Load environment variables
 python main.py
 ```
 
@@ -112,10 +116,7 @@ Set `FAKE_LLM_MODE=true` in your `.env` file to run the game with deterministic 
 ## Common Tasks
 
 ### Add a new scoring criterion
-Edit `llm.py`, update the prompt in `_llm_score_captions()`.
-
-### Change round timer
-Set `ROUND_TIMER_SECONDS` in `.env`, or edit `DEFAULT_TIMER` in `main.py`.
+Edit `llm.py`, update the prompt in `_build_prompt()`.
 
 ### Add local cat images
 Drop `.jpg` or `.png` files in `static/cats/`. They'll be used as fallbacks.
@@ -133,10 +134,12 @@ print(ok, msg)
 
 - **UI Framework:** Gradio (chosen for easy sharing via public URLs)
 - **Database:** DuckDB in-memory (schema in `storage.py`)
-- **LLM:** Gemini 2.5 Pro via `google-generativeai` SDK
+- **LLM:** Groq (Llama 3.3 70B) preferred, Gemini as fallback
 - **Images:** TheCatAPI with local fallback
 
 The game uses Gradio's state management to track session/player IDs per browser tab. All persistent data (scores, players) goes through `storage.py`.
+
+Host UI includes a 2-second auto-refresh timer to keep player list and game state updated.
 
 ---
 
@@ -144,7 +147,7 @@ The game uses Gradio's state management to track session/player IDs per browser 
 
 - No user authentication or accounts
 - No horizontal scaling or multi-instance support
-- No real-time WebSocket sync (players must manually refresh)
+- No real-time WebSocket sync (host uses polling, players refresh manually)
 - No image moderation pipeline
 
 These are intentional simplifications for a 2-day build scope.

@@ -4,7 +4,8 @@
 # Web UI framework
 gradio>=4.0.0
 
-# Google Gemini AI
+# LLM APIs (Groq preferred, Gemini as fallback)
+groq>=0.9.0
 google-generativeai>=0.8.0
 
 # Database

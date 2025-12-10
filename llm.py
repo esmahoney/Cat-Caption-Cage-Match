@@ -1,7 +1,7 @@
 """
 llm.py - LLM scoring and roast mode for Cat Caption Cage Match
 
-Handles all interactions with Google Gemini for caption scoring.
+Handles all interactions with LLMs (Groq or Google Gemini) for caption scoring.
 Includes a fake_llm mode for testing without an API key.
 """
 
@@ -9,8 +9,18 @@ import os
 import json
 import random
 import hashlib
+import base64
+import io
 from typing import Optional
 from PIL import Image
+
+# Try to import Groq
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+    Groq = None
 
 # Try to import Google Generative AI
 try:
@@ -22,52 +32,59 @@ except ImportError:
 
 
 # Model configuration
-MODEL_NAME = "gemini-2.5-pro-preview-06-05"
-VISION_MODEL_NAME = "gemini-2.0-flash"
+# Using llama-3.3-70b for text scoring (vision models have access issues)
+GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
+GEMINI_MODEL = "gemini-1.5-flash"
 
-# Cached model instance
-_model = None
-_configured = False
+# Cached instances
+_groq_client = None
+_gemini_model = None
+_configured_provider = None  # 'groq', 'gemini', or None
 
 
 def configure_api() -> bool:
-    """Configure the Gemini API with the API key from environment."""
-    global _configured
+    """Configure the LLM API. Tries Groq first, then Gemini."""
+    global _configured_provider, _groq_client, _gemini_model
     
-    if not GENAI_AVAILABLE:
-        print("Warning: google-generativeai not installed")
-        return False
+    # Try Groq first
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if groq_key and GROQ_AVAILABLE:
+        try:
+            _groq_client = Groq(api_key=groq_key)
+            _configured_provider = 'groq'
+            return True
+        except Exception as e:
+            print(f"Groq configuration failed: {e}")
     
-    api_key = os.environ.get("GOOGLE_API_KEY", "")
-    if not api_key:
-        print("Warning: GOOGLE_API_KEY not set")
-        return False
+    # Fall back to Gemini
+    gemini_key = os.environ.get("GOOGLE_API_KEY", "")
+    if gemini_key and GENAI_AVAILABLE:
+        try:
+            genai.configure(api_key=gemini_key)
+            _gemini_model = genai.GenerativeModel(GEMINI_MODEL)
+            _configured_provider = 'gemini'
+            return True
+        except Exception as e:
+            print(f"Gemini configuration failed: {e}")
     
-    try:
-        genai.configure(api_key=api_key)
-        _configured = True
-        return True
-    except Exception as e:
-        print(f"Error configuring Gemini API: {e}")
-        return False
-
-
-def get_model():
-    """Get the Gemini model instance."""
-    global _model
+    if not GROQ_AVAILABLE and not GENAI_AVAILABLE:
+        print("Warning: Neither groq nor google-generativeai packages installed")
+    elif not groq_key and not gemini_key:
+        print("Warning: Neither GROQ_API_KEY nor GOOGLE_API_KEY set")
     
-    if not _configured:
-        configure_api()
-    
-    if _model is None and _configured:
-        _model = genai.GenerativeModel(VISION_MODEL_NAME)
-    
-    return _model
+    return False
 
 
 def is_fake_mode() -> bool:
     """Check if fake LLM mode is enabled."""
     return os.environ.get("FAKE_LLM_MODE", "").lower() == "true"
+
+
+def _image_to_base64(image: Image.Image) -> str:
+    """Convert PIL Image to base64 string."""
+    buffered = io.BytesIO()
+    image.save(buffered, format="JPEG")
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 
 def score_captions(
@@ -89,41 +106,46 @@ def score_captions(
     if not captions:
         return []
     
-    # Use fake mode if enabled or if API not available
-    if is_fake_mode() or not _configured:
+    # Use fake mode if enabled or if no API configured
+    if is_fake_mode() or _configured_provider is None:
         return _fake_score_captions(captions)
     
     try:
-        return _llm_score_captions(image, captions, image_description)
+        if _configured_provider == 'groq':
+            return _groq_score_captions(image, captions)
+        elif _configured_provider == 'gemini':
+            return _gemini_score_captions(image, captions)
+        else:
+            return _fake_score_captions(captions)
     except Exception as e:
         print(f"LLM scoring failed: {e}")
         # Fall back to fake scoring
         return _fake_score_captions(captions)
 
 
-def _llm_score_captions(
-    image: Image.Image,
-    captions: list[dict],
-    image_description: Optional[str] = None
-) -> list[dict]:
-    """Score captions using the actual Gemini LLM."""
-    model = get_model()
-    if model is None:
-        return _fake_score_captions(captions)
-    
-    # Build the caption list for the prompt
+def _build_prompt(captions: list[dict], has_image: bool = False) -> str:
+    """Build the scoring prompt."""
     caption_list = "\n".join([
         f"{i+1}. Player: \"{c['player_name']}\" - Caption: \"{c['caption']}\""
         for i, c in enumerate(captions)
     ])
     
-    prompt = f"""You are "Cat Meme Gordon Ramsay" - a brutally honest but hilarious judge of cat meme captions.
-
-Your job is to rate each caption on a scale of 0-10 based on:
+    if has_image:
+        criteria = """Your job is to rate each caption on a scale of 0-10 based on:
 - HUMOR (0-10): How funny is it? Does it make you laugh?
 - RELEVANCE (0-10): How well does it relate to the cat image?
 
-The final score is the average of humor and relevance, rounded to the nearest integer.
+The final score is the average of humor and relevance, rounded to the nearest integer."""
+    else:
+        criteria = """Your job is to rate each caption on a scale of 0-10 based on:
+- HUMOR (0-10): How funny is it? Does it make you laugh?
+- CREATIVITY (0-10): How clever or original is it as a cat meme caption?
+
+The final score is the average of humor and creativity, rounded to the nearest integer."""
+    
+    return f"""You are "Cat Meme Gordon Ramsay" - a brutally honest but hilarious judge of cat meme captions.
+
+{criteria}
 
 BE RUTHLESS. Be honest. Avoid ties when possible - there should be clear winners and losers.
 Add a short, snarky roast comment for each caption in your Gordon Ramsay style (1-2 sentences max).
@@ -146,42 +168,84 @@ Respond with ONLY valid JSON in this exact format (no markdown, no extra text):
 
 Make sure to include ALL captions in your response, in the same order as given."""
 
+
+def _parse_llm_response(response_text: str, captions: list[dict]) -> list[dict]:
+    """Parse and validate LLM response."""
+    # Clean up common JSON issues
+    response_text = response_text.strip()
+    if response_text.startswith("```json"):
+        response_text = response_text[7:]
+    if response_text.startswith("```"):
+        response_text = response_text[3:]
+    if response_text.endswith("```"):
+        response_text = response_text[:-3]
+    response_text = response_text.strip()
+    
+    data = json.loads(response_text)
+    results = data.get("results", [])
+    
+    # Validate and clean up results
+    scored_results = []
+    for result in results:
+        scored_results.append({
+            'player_name': result.get('player_name', 'Unknown'),
+            'caption': result.get('caption', ''),
+            'score': max(0, min(10, int(result.get('score', 5)))),
+            'roast_comment': result.get('roast_comment', 'No comment.')
+        })
+    
+    return scored_results
+
+
+def _groq_score_captions(image: Image.Image, captions: list[dict]) -> list[dict]:
+    """Score captions using Groq API (text-only mode for now)."""
+    if _groq_client is None:
+        return _fake_score_captions(captions)
+    
+    prompt = _build_prompt(captions, has_image=False)
+    
     try:
-        # Call the model with image and prompt
-        response = model.generate_content([image, prompt])
+        # Using text model - captions are judged on humor/creativity alone
+        response = _groq_client.chat.completions.create(
+            model=GROQ_TEXT_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            max_tokens=1024,
+            temperature=0.7
+        )
         
-        # Parse the JSON response
-        response_text = response.text.strip()
-        
-        # Clean up common JSON issues
-        if response_text.startswith("```json"):
-            response_text = response_text[7:]
-        if response_text.startswith("```"):
-            response_text = response_text[3:]
-        if response_text.endswith("```"):
-            response_text = response_text[:-3]
-        response_text = response_text.strip()
-        
-        data = json.loads(response_text)
-        results = data.get("results", [])
-        
-        # Validate and clean up results
-        scored_results = []
-        for result in results:
-            scored_results.append({
-                'player_name': result.get('player_name', 'Unknown'),
-                'caption': result.get('caption', ''),
-                'score': max(0, min(10, int(result.get('score', 5)))),
-                'roast_comment': result.get('roast_comment', 'No comment.')
-            })
-        
-        return scored_results
+        response_text = response.choices[0].message.content
+        return _parse_llm_response(response_text, captions)
         
     except json.JSONDecodeError as e:
-        print(f"Failed to parse LLM response as JSON: {e}")
+        print(f"Failed to parse Groq response as JSON: {e}")
         return _fake_score_captions(captions)
     except Exception as e:
-        print(f"LLM scoring error: {e}")
+        print(f"Groq scoring error: {e}")
+        return _fake_score_captions(captions)
+
+
+def _gemini_score_captions(image: Image.Image, captions: list[dict]) -> list[dict]:
+    """Score captions using Gemini API."""
+    if _gemini_model is None:
+        return _fake_score_captions(captions)
+    
+    prompt = _build_prompt(captions, has_image=True)
+    
+    try:
+        response = _gemini_model.generate_content([image, prompt])
+        response_text = response.text
+        return _parse_llm_response(response_text, captions)
+        
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse Gemini response as JSON: {e}")
+        return _fake_score_captions(captions)
+    except Exception as e:
+        print(f"Gemini scoring error: {e}")
         return _fake_score_captions(captions)
 
 
@@ -253,26 +317,39 @@ def _fake_score_captions(captions: list[dict]) -> list[dict]:
 
 
 def test_api_connection() -> tuple[bool, str]:
-    """Test if the Gemini API is working."""
+    """Test if the LLM API is working."""
     if is_fake_mode():
         return True, "Fake LLM mode enabled (no API call made)"
     
-    if not GENAI_AVAILABLE:
-        return False, "google-generativeai package not installed"
-    
     if not configure_api():
-        return False, "Failed to configure API (check GOOGLE_API_KEY)"
+        providers = []
+        if GROQ_AVAILABLE:
+            providers.append("GROQ_API_KEY")
+        if GENAI_AVAILABLE:
+            providers.append("GOOGLE_API_KEY")
+        
+        if not providers:
+            return False, "No LLM packages installed (try: pip install groq)"
+        return False, f"No API key set. Set one of: {', '.join(providers)}"
     
     try:
-        model = get_model()
-        if model is None:
-            return False, "Could not create model instance"
+        if _configured_provider == 'groq':
+            # Simple test with Groq
+            response = _groq_client.chat.completions.create(
+                model=GROQ_TEXT_MODEL,
+                messages=[{"role": "user", "content": "Say 'meow' if you can hear me."}],
+                max_tokens=10
+            )
+            text = response.choices[0].message.content
+            return True, f"Groq API working! Response: {text[:50]}..."
         
-        # Simple test prompt
-        response = model.generate_content("Say 'meow' if you can hear me.")
-        if response and response.text:
-            return True, f"API working! Response: {response.text[:50]}..."
-        return False, "API returned empty response"
+        elif _configured_provider == 'gemini':
+            response = _gemini_model.generate_content("Say 'meow' if you can hear me.")
+            if response and response.text:
+                return True, f"Gemini API working! Response: {response.text[:50]}..."
+            return False, "Gemini API returned empty response"
+        
+        return False, "No provider configured"
         
     except Exception as e:
         return False, f"API test failed: {e}"
