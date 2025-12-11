@@ -42,7 +42,7 @@ An AI-powered party game where players write meme captions for random cat pictur
 
 6. **Scoreboard & winner**
    - Scores accumulate across rounds
-   - After 5 rounds, the player with the most points is crowned **Supreme Cat Meme Champion** 👑
+   - After 3 rounds, the player with the most points is crowned **Supreme Cat Meme Champion** 👑
    - Host can start another game on the same session
 
 ---
@@ -127,7 +127,7 @@ All configuration is done via environment variables in `.env`:
 | `GOOGLE_API_KEY` | Yes* | - | Google Gemini API key (fallback) |
 | `THECATAPI_KEY` | No | - | TheCatAPI key (higher rate limits) |
 | `FAKE_LLM_MODE` | No | `false` | Use fake scoring (no API needed) |
-| `ROUNDS_PER_GAME` | No | `5` | Number of rounds per game |
+| `ROUNDS_PER_GAME` | No | `3` | Number of rounds per game |
 
 *At least one LLM API key required, unless `FAKE_LLM_MODE=true`
 

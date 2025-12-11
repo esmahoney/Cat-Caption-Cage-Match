@@ -34,7 +34,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             status VARCHAR DEFAULT 'lobby',  -- lobby, playing, game_over, finished
             current_round INT DEFAULT 0,
             current_game INT DEFAULT 1,
-            total_rounds INT DEFAULT 5,
+            total_rounds INT DEFAULT 3,
             round_timer_seconds INT DEFAULT 120
         )
     """)
@@ -84,7 +84,7 @@ def generate_session_id() -> str:
 
 # --- Session Management ---
 
-def create_session(total_rounds: int = 5, round_timer: int = 45) -> str:
+def create_session(total_rounds: int = 3, round_timer: int = 45) -> str:
     """Create a new game session and return the session ID."""
     con = get_connection()
     session_id = generate_session_id()
