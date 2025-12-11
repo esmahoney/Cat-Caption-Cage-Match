@@ -444,39 +444,48 @@ def build_host_ui():
                 interactive=False
             )
             
-            with gr.Row():
-                with gr.Column(scale=2):
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=3, min_width=400):
                     # Round controls
                     with gr.Group():
-                        gr.Markdown("### Round Controls")
+                        gr.Markdown("### 🎬 Round Controls")
                         with gr.Row():
-                            start_round_btn = gr.Button("▶️ Start Round", variant="primary")
+                            start_round_btn = gr.Button("▶️ Start Round", variant="primary", size="lg")
                             end_round_btn = gr.Button("⏹️ End Round & Score", variant="secondary")
                         round_status = gr.Markdown("_Click 'Start Round' to begin_")
                     
-                    # Cat image and host's caption input
-                    cat_image = gr.Image(label="Current Cat", visible=False)
+                    # Cat image
+                    cat_image = gr.Image(
+                        label="🐱 Caption This Cat!", 
+                        visible=False,
+                        height=400
+                    )
                     
+                    # Caption input
                     with gr.Group() as caption_group:
                         gr.Markdown("### 📝 Your Caption")
-                        with gr.Row():
-                            host_caption_input = gr.Textbox(
-                                label=f"Your Caption (max {MAX_CAPTION_WORDS} words)",
-                                placeholder="Write your funniest caption...",
-                                max_lines=2,
-                                interactive=True
-                            )
-                            host_submit_btn = gr.Button("📤 Submit", variant="primary")
+                        host_caption_input = gr.Textbox(
+                            label=f"Caption (max {MAX_CAPTION_WORDS} words)",
+                            placeholder="Write your funniest caption for this cat...",
+                            lines=2,
+                            max_lines=3,
+                            interactive=True,
+                            show_label=True
+                        )
+                        host_submit_btn = gr.Button("📤 Submit Caption", variant="primary", size="lg")
                         host_caption_status = gr.Markdown("")
                 
-                with gr.Column(scale=1):
-                    # Player list with submission status (auto-refreshes every 2 seconds)
-                    gr.Markdown("### 👥 Players")
-                    player_list = gr.Markdown("_No players yet_")
-                    refresh_players_btn = gr.Button("🔄 Refresh")
+                with gr.Column(scale=1, min_width=250):
+                    # Player list
+                    with gr.Group():
+                        gr.Markdown("### 👥 Players")
+                        player_list = gr.Markdown("_No players yet_")
+                        refresh_players_btn = gr.Button("🔄 Refresh", size="sm")
                     
                     # Scoreboard
-                    scoreboard_display = gr.Markdown("_Scoreboard will appear here_")
+                    with gr.Group():
+                        gr.Markdown("### 🏆 Scoreboard")
+                        scoreboard_display = gr.Markdown("_Scores appear after first round_")
             
             # Auto-refresh timer (every 3 seconds during active session)
             auto_refresh_timer = gr.Timer(value=3, active=False)
@@ -898,41 +907,51 @@ def build_player_ui():
         
         # Game section (hidden until joined)
         with gr.Group(visible=False) as game_group:
-            with gr.Row():
-                with gr.Column(scale=2):
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=3, min_width=400):
                     player_welcome = gr.Markdown("### Welcome!")
                     game_status = gr.Markdown("_Waiting for host to start round..._")
                     
-                    # Cat image and caption
-                    cat_image = gr.Image(label="Caption this cat!", visible=False)
+                    # Cat image
+                    cat_image = gr.Image(
+                        label="🐱 Caption This Cat!", 
+                        visible=False,
+                        height=400
+                    )
                     
-                    with gr.Row():
+                    # Caption input
+                    with gr.Group():
                         caption_input = gr.Textbox(
-                            label=f"Your Caption (max {MAX_CAPTION_WORDS} words)",
-                            placeholder="Write your funniest caption...",
-                            max_lines=2,
+                            label=f"Caption (max {MAX_CAPTION_WORDS} words)",
+                            placeholder="Write your funniest caption for this cat...",
+                            lines=2,
+                            max_lines=3,
                             interactive=True
                         )
-                        submit_btn = gr.Button("📤 Submit Caption", variant="primary")
-                    
-                    caption_status = gr.Markdown("")
+                        submit_btn = gr.Button("📤 Submit Caption", variant="primary", size="lg")
+                        caption_status = gr.Markdown("")
                     
                     # Results
-                    results_display = gr.Markdown("")
+                    with gr.Group():
+                        gr.Markdown("### 📊 Results")
+                        results_display = gr.Markdown("")
                 
-                with gr.Column(scale=1):
-                    # Player list with submission status
-                    gr.Markdown("### 👥 Players")
-                    player_list = gr.Markdown("_No players yet_")
+                with gr.Column(scale=1, min_width=250):
+                    # Player list
+                    with gr.Group():
+                        gr.Markdown("### 👥 Players")
+                        player_list = gr.Markdown("_No players yet_")
                     
                     # Scoreboard
-                    scoreboard_display = gr.Markdown("### 🏆 Scoreboard\n_Scores will appear here_")
+                    with gr.Group():
+                        gr.Markdown("### 🏆 Scoreboard")
+                        scoreboard_display = gr.Markdown("_Scores appear after first round_")
             
             # Auto-refresh timer (activates after joining, 3 second interval)
             auto_refresh_timer = gr.Timer(value=3, active=False)
             
             # Refresh button (manual backup)
-            refresh_btn = gr.Button("🔄 Refresh Game State")
+            refresh_btn = gr.Button("🔄 Refresh Game State", size="sm")
         
         # --- Event handlers ---
         
@@ -1239,12 +1258,129 @@ def build_player_ui():
 def build_app():
     """Build the main application with tabs for host and player."""
     
+    # Custom theme with Nunito font and playful orange color scheme
+    custom_theme = gr.themes.Soft(
+        primary_hue="orange",
+        secondary_hue="cyan",
+        neutral_hue="slate",
+        font=[gr.themes.GoogleFont("Nunito"), "ui-sans-serif", "system-ui", "sans-serif"],
+        font_mono=[gr.themes.GoogleFont("Fira Code"), "ui-monospace", "monospace"],
+    ).set(
+        # Button styling
+        button_primary_background_fill="*primary_500",
+        button_primary_background_fill_hover="*primary_600",
+        button_primary_text_color="white",
+        button_large_text_size="*text_lg",
+        button_large_padding="*spacing_lg",
+        # Text sizing
+        block_title_text_size="*text_lg",
+        block_label_text_size="*text_md",
+        # Borders and radius
+        block_border_width="1px",
+        block_radius="*radius_lg",
+        input_radius="*radius_md",
+        button_large_radius="*radius_md",
+        # Spacing
+        block_padding="*spacing_lg",
+    )
+    
+    custom_css = """
+    /* Container */
+    .gradio-container { 
+        max-width: 1100px; 
+        margin: auto;
+        padding: 0.5rem 1rem;
+    }
+    
+    /* Groups with subtle shadows */
+    .gr-group {
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+        border-radius: 16px !important;
+        margin-bottom: 1rem;
+    }
+    
+    /* Cat image styling */
+    .gr-image {
+        border-radius: 16px !important;
+        overflow: hidden;
+    }
+    .gr-image img {
+        border-radius: 12px;
+        object-fit: contain;
+    }
+    
+    /* Caption input - make it stand out */
+    .gr-textbox textarea {
+        font-size: 1.1rem !important;
+        line-height: 1.5 !important;
+    }
+    
+    /* Tab styling */
+    .tab-nav {
+        border-bottom: 2px solid #f0f0f0;
+        margin-bottom: 1rem;
+    }
+    .tab-nav button {
+        font-weight: 600 !important;
+        font-size: 1.1rem !important;
+        padding: 0.75rem 1.5rem !important;
+    }
+    .tab-nav button.selected {
+        border-bottom: 3px solid var(--primary-500) !important;
+    }
+    
+    /* Headers */
+    .prose h3 {
+        margin-top: 0.25rem !important;
+        margin-bottom: 0.75rem !important;
+        color: #334155;
+    }
+    
+    /* Session code display - prominent styling */
+    .gr-textbox input[readonly] {
+        font-family: 'Fira Code', monospace;
+        font-size: 1.4rem !important;
+        font-weight: 600;
+        letter-spacing: 0.15em;
+        text-align: center;
+        background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+        border: 2px dashed #fb923c !important;
+    }
+    
+    /* Primary buttons - extra pop */
+    .gr-button.primary {
+        font-weight: 600 !important;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+    .gr-button.primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(251, 146, 60, 0.3);
+    }
+    
+    /* Player list and scoreboard polish */
+    .prose ul {
+        padding-left: 0 !important;
+        list-style: none !important;
+    }
+    .prose li {
+        padding: 0.25rem 0;
+    }
+    
+    /* Results section */
+    .prose strong {
+        color: #ea580c;
+    }
+    
+    /* Footer */
+    footer {
+        margin-top: 2rem;
+    }
+    """
+    
     with gr.Blocks(
         title="Cat Caption Cage Match",
-        theme=gr.themes.Soft(),
-        css="""
-        .gradio-container { max-width: 1200px; margin: auto; }
-        """
+        theme=custom_theme,
+        css=custom_css
     ) as app:
         gr.Markdown("""
         # 🐱 Cat Caption Cage Match
@@ -1256,7 +1392,7 @@ def build_app():
         2. **Players:** Go to the "Player" tab, enter the session code, and join!
         3. Each round, everyone captions the same cat picture
         4. Once ALL players submit, the AI judges and roasts everyone
-        5. After 5 rounds, the champion is crowned!
+        5. After all rounds, the champion is crowned! 👑
         
         ---
         """)
