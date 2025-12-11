@@ -42,6 +42,7 @@ class SessionState:
         self.current_image = None
         self.current_image_url = None
         self.submissions_this_round: set = set()  # player_ids who submitted
+        self.last_player_list_hash: str = ""  # Track changes to avoid flicker
 
 
 _session_states: dict[str, SessionState] = {}
@@ -129,6 +130,7 @@ def start_round(session_id: str) -> tuple[bool, str, Optional[object]]:
     state.current_image = image
     state.current_image_url = image_url
     state.submissions_this_round = set()
+    state.last_player_list_hash = ""  # Reset to force UI update
     
     # Record round in DB
     storage.start_round(session_id, game_num, round_num, image_url)
@@ -274,6 +276,7 @@ def start_new_game(session_id: str) -> tuple[bool, str, int]:
         state.current_image = None
         state.current_image_url = None
         state.submissions_this_round = set()
+        state.last_player_list_hash = ""  # Reset to force UI update
     
     return True, f"🎮 Game {new_game_num} started! Ready for round 1.", new_game_num
 
@@ -475,8 +478,8 @@ def build_host_ui():
                     # Scoreboard
                     scoreboard_display = gr.Markdown("_Scoreboard will appear here_")
             
-            # Auto-refresh timer (every 2 seconds during active session)
-            auto_refresh_timer = gr.Timer(value=2, active=False)
+            # Auto-refresh timer (every 3 seconds during active session)
+            auto_refresh_timer = gr.Timer(value=3, active=False)
             
             # Results section
             with gr.Group():
@@ -530,20 +533,21 @@ def build_host_ui():
         def on_start_round(session_id, host_player_id):
             if not session_id:
                 return (
-                    gr.update(), "", 
+                    gr.update(), "",
                     format_player_list(session_id, show_submission_status=True) if session_id else "_No players_",
                     format_scoreboard(session_id) if session_id else "",
                     gr.update(visible=False), "",
                     gr.update(value="", interactive=True),  # clear and enable caption input
-                    ""  # clear caption status
+                    "",  # clear caption status
+                    gr.Timer(active=False)
                 )
-            
+
             success, msg, image = start_round(session_id)
             if success:
                 session = storage.get_session(session_id)
                 round_num = session['current_round'] if session else 0
                 total_rounds = session['total_rounds'] if session else DEFAULT_ROUNDS
-                
+
                 return (
                     gr.update(value=image, visible=True),
                     f"### Round {round_num} of {total_rounds}\n\n{msg}",
@@ -552,15 +556,17 @@ def build_host_ui():
                     gr.update(visible=False),  # hide game over section
                     "",
                     gr.update(value="", interactive=True),  # clear and enable caption input
-                    ""  # clear caption status
+                    "",  # clear caption status
+                    gr.Timer(active=True)  # REACTIVATE timer for round updates
                 )
             return (
                 gr.update(visible=False), msg,
                 format_player_list(session_id, show_submission_status=False),
                 format_scoreboard(session_id),
-                gr.update(visible=False), "", 
+                gr.update(visible=False), "",
                 gr.update(value="", interactive=True),  # clear caption input
-                ""  # clear caption status
+                "",  # clear caption status
+                gr.Timer(active=False)
             )
         
         def on_host_submit_caption(session_id, host_player_id, caption):
@@ -702,33 +708,28 @@ def build_host_ui():
             )
         
         def on_auto_refresh(session_id):
-            """Auto-refresh player list and check if all submitted."""
+            """Auto-refresh for host - updates player list and checks if all submitted.
+
+            Stops timer in stable states to prevent UI flicker from Gradio's timer tick.
+            """
             if not session_id:
-                return (
-                    format_player_list(None, show_submission_status=False),
-                    format_scoreboard(None) if session_id else "_No scores yet_",
-                    "",
-                    gr.update(visible=False),
-                    ""
-                )
-            
+                return tuple(gr.update() for _ in range(5)) + (gr.Timer(active=False),)
+
             session = storage.get_session(session_id)
             if not session:
-                return (
-                    "_No session_",
-                    "_No scores_",
-                    "",
-                    gr.update(visible=False),
-                    ""
-                )
-            
-            is_playing = session['status'] == 'playing'
-            
+                return tuple(gr.update() for _ in range(5)) + (gr.Timer(active=False),)
+
+            status = session['status']
+
+            # For non-playing states, STOP the timer to prevent flicker
+            if status != 'playing':
+                return tuple(gr.update() for _ in range(5)) + (gr.Timer(active=False),)
+
             # Check if all submitted and auto-end the round
-            if is_playing and check_all_submitted(session_id):
+            if check_all_submitted(session_id):
                 score_success, score_msg, results, is_game_over = end_round_and_score(session_id)
                 round_num = session['current_round']
-                
+
                 if score_success:
                     results_md = format_round_results(results, round_num)
                     if is_game_over:
@@ -737,24 +738,38 @@ def build_host_ui():
                             format_scoreboard(session_id),
                             results_md,
                             gr.update(visible=True),
-                            format_game_over(session_id)
+                            format_game_over(session_id),
+                            gr.Timer(active=False)
                         )
                     return (
                         format_player_list(session_id, show_submission_status=False),
                         format_scoreboard(session_id),
                         results_md,
                         gr.update(visible=False),
-                        ""
+                        "",
+                        gr.Timer(active=False)
                     )
+
+            # Active round - only update player list if changed
+            state = get_session_state(session_id)
+            new_player_list = format_player_list(session_id, show_submission_status=True)
+
+            if state and new_player_list != state.last_player_list_hash:
+                state.last_player_list_hash = new_player_list
+                return (
+                    new_player_list,
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.Timer(active=True)
+                )
             
-            # Normal refresh - just update player list
-            return (
-                format_player_list(session_id, show_submission_status=is_playing),
-                format_scoreboard(session_id),
-                gr.update(),  # don't change results
-                gr.update(),  # don't change game over visibility
-                gr.update()   # don't change game over display
-            )
+            # No changes during playing - stop timer to prevent flicker
+            return tuple(gr.update() for _ in range(5)) + (gr.Timer(active=False),)
+            
+            # No changes
+            return tuple(gr.update() for _ in range(5))
         
         # Connect events
         create_btn.click(
@@ -774,7 +789,7 @@ def build_host_ui():
         auto_refresh_timer.tick(
             on_auto_refresh,
             inputs=[session_id_state],
-            outputs=[player_list, scoreboard_display, results_display, game_over_group, game_over_display]
+            outputs=[player_list, scoreboard_display, results_display, game_over_group, game_over_display, auto_refresh_timer]
         )
         
         start_round_btn.click(
@@ -782,7 +797,8 @@ def build_host_ui():
             inputs=[session_id_state, host_player_id_state],
             outputs=[
                 cat_image, round_status, player_list, scoreboard_display,
-                game_over_group, game_over_display, host_caption_input, host_caption_status
+                game_over_group, game_over_display, host_caption_input, host_caption_status,
+                auto_refresh_timer  # Reactivate timer when round starts
             ]
         )
         
@@ -835,6 +851,7 @@ def build_player_ui():
     # State
     session_id_state = gr.State(value=None)
     player_id_state = gr.State(value=None)
+    last_status_state = gr.State(value="")  # Track last status to detect changes
     
     with gr.Blocks(title="Cat Caption Cage Match - Player", theme=gr.themes.Soft()) as player_ui:
         gr.Markdown("# 🐱 Cat Caption Cage Match")
@@ -888,7 +905,10 @@ def build_player_ui():
                     # Scoreboard
                     scoreboard_display = gr.Markdown("### 🏆 Scoreboard\n_Scores will appear here_")
             
-            # Refresh button
+            # Auto-refresh timer (activates after joining, 3 second interval)
+            auto_refresh_timer = gr.Timer(value=3, active=False)
+            
+            # Refresh button (manual backup)
             refresh_btn = gr.Button("🔄 Refresh Game State")
         
         # --- Event handlers ---
@@ -901,25 +921,29 @@ def build_player_ui():
                 return (
                     session_id,
                     player_id,
+                    "",  # initial last_status
                     gr.update(visible=False),  # hide join group
                     gr.update(visible=True),   # show game group
                     f"### 👋 Welcome, {player_name.strip() or 'Anonymous'}!",
                     message,
                     format_player_list(session_id, show_submission_status=False),
                     format_scoreboard(session_id),
-                    ""
+                    "",
+                    gr.Timer(active=True)  # activate auto-refresh
                 )
             
             return (
                 None,
                 None,
+                "",
                 gr.update(visible=True),
                 gr.update(visible=False),
                 "",
                 message,
                 "",
                 "",
-                ""
+                "",
+                gr.Timer(active=False)
             )
         
         def on_submit_caption(session_id, player_id, caption):
@@ -954,7 +978,103 @@ def build_player_ui():
                 gr.update(interactive=not success)  # Disable input after successful submit
             )
         
+        def on_player_auto_refresh(session_id, player_id, last_status):
+            """Auto-refresh for players - updates when game state changes.
+            
+            Stops timer in stable states to prevent UI flicker from Gradio's timer tick.
+            Players can use the Refresh button to manually check for updates.
+            """
+            if not session_id:
+                return (last_status,) + tuple(gr.update() for _ in range(6)) + (gr.Timer(active=False),)
+            
+            session = storage.get_session(session_id)
+            if not session:
+                return (last_status,) + tuple(gr.update() for _ in range(6)) + (gr.Timer(active=False),)
+            
+            state = get_session_state(session_id)
+            round_num = session['current_round']
+            game_num = session['current_game']
+            total_rounds = session['total_rounds']
+            status = session['status']
+            
+            # Build status key for change detection
+            submitted_count = len(state.submissions_this_round) if state else 0
+            has_submitted = player_id in state.submissions_this_round if state else False
+            current_key = f"{status}|r{round_num}|g{game_num}|s{submitted_count}|h{has_submitted}"
+            
+            # For stable states (lobby, game_over, finished), update once then STOP timer
+            if status in ('lobby', 'game_over', 'finished'):
+                if current_key == last_status:
+                    return (last_status,) + tuple(gr.update() for _ in range(6)) + (gr.Timer(active=False),)
+            
+            # For 'playing' status, also stop timer when nothing changed to prevent flicker
+            if status == 'playing' and current_key == last_status:
+                return (last_status,) + tuple(gr.update() for _ in range(6)) + (gr.Timer(active=False),)
+            
+            # --- State has changed, update UI ---
+            
+            if status == 'finished':
+                return (
+                    current_key,
+                    "🚪 **Session ended.** Thanks for playing!",
+                    gr.update(visible=False),
+                    format_player_list(session_id, show_submission_status=False),
+                    format_scoreboard(session_id),
+                    "",
+                    gr.update(interactive=False),
+                    gr.Timer(active=False)  # Stop timer - session ended
+                )
+            
+            if status == 'game_over':
+                game_over_md = format_game_over(session_id)
+                return (
+                    current_key,
+                    f"🏁 **Game {game_num} Over!** Waiting for host to start new game...",
+                    gr.update(visible=False),
+                    format_player_list(session_id, show_submission_status=False),
+                    format_scoreboard(session_id),
+                    game_over_md,
+                    gr.update(interactive=False),
+                    gr.Timer(active=False)  # Stop timer - will restart when new game begins
+                )
+            
+            if status == 'playing':
+                players = storage.get_players(session_id)
+                status_text = f"**Round {round_num} of {total_rounds}** | {submitted_count}/{len(players)} submitted"
+                if has_submitted:
+                    status_text += " | ✅ You're done!"
+                
+                return (
+                    current_key,
+                    status_text,
+                    gr.update(value=state.current_image, visible=True) if state and state.current_image else gr.update(visible=False),
+                    format_player_list(session_id, show_submission_status=True),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(interactive=not has_submitted),
+                    gr.Timer(active=True)  # Keep timer active during play
+                )
+            
+            # Lobby status - show results then stop timer
+            results_md = ""
+            if round_num > 0:
+                last_results = storage.get_round_captions(session_id, game_num, round_num)
+                if last_results:
+                    results_md = format_round_results(last_results, round_num)
+            
+            return (
+                current_key,
+                f"✅ Round {round_num} complete! Waiting for host to start round {round_num + 1}...",
+                gr.update(visible=False),
+                format_player_list(session_id, show_submission_status=False),
+                format_scoreboard(session_id),
+                results_md,
+                gr.update(value="", interactive=True),
+                gr.Timer(active=False)  # Stop timer in lobby - will restart when round begins
+            )
+        
         def on_refresh(session_id, player_id):
+            """Manual refresh - also reactivates timer if game is playing."""
             if not session_id:
                 return (
                     "_Not in a game_",
@@ -962,7 +1082,8 @@ def build_player_ui():
                     "_No players_",
                     "_No scores yet_",
                     "",
-                    gr.update(interactive=True)
+                    gr.update(interactive=True),
+                    gr.Timer(active=False)
                 )
             
             session = storage.get_session(session_id)
@@ -973,7 +1094,8 @@ def build_player_ui():
                     "_No players_",
                     "_No scores yet_",
                     "",
-                    gr.update(interactive=True)
+                    gr.update(interactive=True),
+                    gr.Timer(active=False)
                 )
             
             state = get_session_state(session_id)
@@ -989,7 +1111,8 @@ def build_player_ui():
                     format_player_list(session_id, show_submission_status=False),
                     format_scoreboard(session_id),
                     "",
-                    gr.update(interactive=False)
+                    gr.update(interactive=False),
+                    gr.Timer(active=False)
                 )
             
             if session['status'] == 'game_over':
@@ -999,11 +1122,12 @@ def build_player_ui():
                     format_player_list(session_id, show_submission_status=False),
                     format_game_over(session_id),
                     "",
-                    gr.update(interactive=False)
+                    gr.update(interactive=False),
+                    gr.Timer(active=False)
                 )
             
             if session['status'] == 'playing':
-                # Show current round
+                # Show current round - REACTIVATE timer for live updates
                 has_submitted = player_id in state.submissions_this_round if state else False
                 players = storage.get_players(session_id)
                 submitted_count = len(state.submissions_this_round) if state else 0
@@ -1018,7 +1142,8 @@ def build_player_ui():
                     format_player_list(session_id, show_submission_status=True),
                     format_scoreboard(session_id),
                     "",
-                    gr.update(interactive=not has_submitted)
+                    gr.update(interactive=not has_submitted),
+                    gr.Timer(active=True)  # Reactivate timer during play
                 )
             
             # Lobby status (between rounds) - clear caption for next round
@@ -1034,7 +1159,8 @@ def build_player_ui():
                 format_player_list(session_id, show_submission_status=False),
                 format_scoreboard(session_id),
                 results_md,
-                gr.update(value="", interactive=True)  # Clear caption for next round
+                gr.update(value="", interactive=True),
+                gr.Timer(active=False)  # Timer off in lobby
             )
         
         # Connect events
@@ -1042,10 +1168,23 @@ def build_player_ui():
             on_join,
             inputs=[session_code_input, player_name_input],
             outputs=[
-                session_id_state, player_id_state,
+                session_id_state, player_id_state, last_status_state,
                 join_group, game_group,
                 player_welcome, join_status,
-                player_list, scoreboard_display, results_display
+                player_list, scoreboard_display, results_display,
+                auto_refresh_timer
+            ]
+        )
+        
+        # Auto-refresh timer for live updates
+        auto_refresh_timer.tick(
+            on_player_auto_refresh,
+            inputs=[session_id_state, player_id_state, last_status_state],
+            outputs=[
+                last_status_state,
+                game_status, cat_image, player_list,
+                scoreboard_display, results_display, caption_input,
+                auto_refresh_timer  # Allow function to control timer active state
             ]
         )
         
@@ -1060,7 +1199,8 @@ def build_player_ui():
             inputs=[session_id_state, player_id_state],
             outputs=[
                 game_status, cat_image, player_list,
-                scoreboard_display, results_display, caption_input
+                scoreboard_display, results_display, caption_input,
+                auto_refresh_timer  # Allow refresh to reactivate timer
             ]
         )
     
