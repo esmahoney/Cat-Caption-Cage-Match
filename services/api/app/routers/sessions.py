@@ -254,11 +254,17 @@ async def start_round(
         ends_at=None,  # No timer for now (per BUILD_PROMPT non-goals)
     )
     
+    if not round_obj:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "SERVER_ERROR", "message": "Failed to create round"},
+        )
+    
     # Update session status
     await storage.update_session_status(session_code, "in_round")
     
     # Broadcast round started to all clients
-    await broadcast_round_started(session_code, round_obj.model_dump(mode="json"))
+    await broadcast_round_started(session_code, round_obj.model_dump(mode="json", by_alias=True))
     
     return StartRoundResponse(round=round_obj)
 
@@ -289,23 +295,27 @@ async def reveal_round(
     
     # Score captions with LLM
     if captions:
+        # Include player_id for reliable matching (display_name may not be unique)
         scores = await score_captions(
             image_url=round_obj.image_url,
-            captions=[{"player_name": c.display_name, "caption": c.text} for c in captions],
+            captions=[
+                {"player_id": c.player_id, "player_name": c.display_name, "caption": c.text}
+                for c in captions
+            ],
         )
         
-        # Build scores dict
+        # Build scores dict - match by player_id for reliability
         scores_dict: dict[str, Score] = {}
         for caption in captions:
             score_data = next(
-                (s for s in scores if s.get("player_name") == caption.display_name),
+                (s for s in scores if s.get("player_id") == caption.player_id),
                 None,
             )
             if score_data:
                 scores_dict[caption.player_id] = Score(
-                    humour=score_data.get("score", 5),
-                    relevance=score_data.get("score", 5),
-                    total=score_data.get("score", 5) * 2,  # Simple: double the score
+                    humour=score_data.get("humour", 5),
+                    relevance=score_data.get("relevance", 5),
+                    total=score_data.get("total", 10),
                     roast=score_data.get("roast_comment", ""),
                 )
         
@@ -326,12 +336,18 @@ async def reveal_round(
     leaderboard = await storage.get_leaderboard(session_code)
     round_obj = await storage.get_round(session_code, round_id)
     
+    if not round_obj:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": "SERVER_ERROR", "message": "Failed to retrieve round after update"},
+        )
+    
     # Broadcast results to all clients
     await broadcast_round_revealed(
         session_code,
-        round_obj.model_dump(mode="json"),
-        [c.model_dump(mode="json") for c in captions],
-        [e.model_dump(mode="json") for e in leaderboard],
+        round_obj.model_dump(mode="json", by_alias=True),
+        [c.model_dump(mode="json", by_alias=True) for c in captions],
+        [e.model_dump(mode="json", by_alias=True) for e in leaderboard],
     )
     
     return RevealRoundResponse(

@@ -97,10 +97,10 @@ async def session_join(sid: str, data: dict):
     return {
         "ok": True,
         "state": {
-            "session": session.model_dump(mode="json"),
-            "players": [p.model_dump(mode="json") for p in players],
-            "currentRound": current_round.model_dump(mode="json") if current_round else None,
-            "leaderboard": [e.model_dump(mode="json") for e in leaderboard],
+            "session": session.model_dump(mode="json", by_alias=True),
+            "players": [p.model_dump(mode="json", by_alias=True) for p in players],
+            "currentRound": current_round.model_dump(mode="json", by_alias=True) if current_round else None,
+            "leaderboard": [e.model_dump(mode="json", by_alias=True) for e in leaderboard],
         },
     }
 
@@ -164,10 +164,10 @@ async def broadcast_session_state(session_code: str) -> None:
     await sio.emit(
         "session:state",
         {
-            "session": session.model_dump(mode="json"),
-            "players": [p.model_dump(mode="json") for p in players],
-            "currentRound": current_round.model_dump(mode="json") if current_round else None,
-            "leaderboard": [e.model_dump(mode="json") for e in leaderboard],
+            "session": session.model_dump(mode="json", by_alias=True),
+            "players": [p.model_dump(mode="json", by_alias=True) for p in players],
+            "currentRound": current_round.model_dump(mode="json", by_alias=True) if current_round else None,
+            "leaderboard": [e.model_dump(mode="json", by_alias=True) for e in leaderboard],
         },
         room=room,
     )

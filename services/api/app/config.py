@@ -18,7 +18,10 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
     
-    # Database
+    # Storage backend: "memory" for in-memory, "sql" for database
+    storage_type: Literal["memory", "sql"] = "memory"
+    
+    # Database (only used when storage_type="sql")
     database_url: str = "sqlite+aiosqlite:///./dev.db"  # Default for dev
     
     # LLM Provider

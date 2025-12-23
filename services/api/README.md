@@ -27,6 +27,15 @@ Create a `.env` file with your settings:
 # Required
 APP_SECRET=your-secret-key-here
 
+# Storage: "memory" (default) | "sql"
+STORAGE_TYPE=memory
+
+# Database (only used when STORAGE_TYPE=sql)
+# SQLite (development):
+DATABASE_URL=sqlite+aiosqlite:///./dev.db
+# PostgreSQL (production) - future:
+# DATABASE_URL=postgresql+asyncpg://user:pass@host/dbname
+
 # LLM Provider: "groq" | "gemini" | "fake"
 LLM_PROVIDER=fake
 
@@ -101,9 +110,16 @@ app/
 │   ├── tokens.py     # Player token signing
 │   ├── images.py     # Cat image fetching
 │   └── llm.py        # LLM scoring
-└── storage/
-    ├── base.py       # Abstract storage interface
-    └── memory.py     # In-memory implementation
+├── storage/
+│   ├── base.py       # Abstract storage interface
+│   ├── memory.py     # In-memory implementation
+│   └── sql.py        # SQLite/PostgreSQL implementation
+├── db/
+│   ├── models.py     # SQLAlchemy ORM models
+│   └── connection.py # Database connection management
+├── migrations/       # Alembic migrations
+│   └── versions/     # Migration scripts
+└── tasks.py          # Background cleanup tasks
 ```
 
 ## Development

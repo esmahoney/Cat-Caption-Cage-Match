@@ -5,7 +5,7 @@ from typing import Annotated, Optional
 
 from fastapi import Depends, Header, HTTPException, Path, status
 
-from .storage import Storage, InMemoryStorage
+from .storage import Storage, InMemoryStorage, SQLStorage
 from .config import get_settings, Settings
 from .services.tokens import verify_player_token
 
@@ -15,12 +15,20 @@ _storage: Optional[Storage] = None
 
 
 def get_storage() -> Storage:
-    """Get the storage instance."""
+    """
+    Get the storage instance.
+    
+    Storage type is determined by STORAGE_TYPE env var:
+    - "memory": In-memory storage (default, fast for dev)
+    - "sql": SQLite/PostgreSQL storage (persistent)
+    """
     global _storage
     if _storage is None:
-        # Default to in-memory storage for development
         settings = get_settings()
-        _storage = InMemoryStorage(session_expiry_hours=settings.session_expiry_hours)
+        if settings.storage_type == "sql":
+            _storage = SQLStorage(session_expiry_hours=settings.session_expiry_hours)
+        else:
+            _storage = InMemoryStorage(session_expiry_hours=settings.session_expiry_hours)
     return _storage
 
 

@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .routers import health_router, sessions_router
 from .socket_manager import sio, configure_cors
+from .tasks import cleanup_task
 from . import __version__
 
 
@@ -22,16 +23,32 @@ async def lifespan(app: FastAPI):
     
     # Startup
     print(f"Starting Cat Caption Cage Match API v{__version__}")
+    print(f"  Storage Type: {settings.storage_type}")
     print(f"  LLM Provider: {settings.llm_provider}")
     print(f"  CORS Origins: {settings.cors_origins}")
     
+    # Initialize database if using SQL storage
+    if settings.storage_type == "sql":
+        from .db.connection import init_db, close_db
+        print(f"  Database URL: {settings.database_url}")
+        await init_db()
+        print("  Database initialized")
+    
     # Configure Socket.IO CORS
     configure_cors(settings.cors_origins)
+    
+    # Start background cleanup task
+    cleanup_task.start()
     
     yield
     
     # Shutdown
     print("Shutting down...")
+    cleanup_task.stop()
+    if settings.storage_type == "sql":
+        from .db.connection import close_db
+        await close_db()
+        print("  Database connection closed")
 
 
 # Create FastAPI app
