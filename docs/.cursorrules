@@ -1,0 +1,158 @@
+You are helping build a lightweight, AI-powered party game called **Cat Caption Cage Match**.
+
+### Context & Persona
+
+- Target users: Scrum Masters, Product Owners, PMs, and distributed development teams who often start remote sessions (standups, refinements, PI planning, retros, etc.) with a quick icebreaker.
+- The game must:
+  - Run **remotely** (Zoom / Meet / Teams friendly)
+  - Be **zero learning curve**: if you can type “I hate Mondays”, you can play.
+  - Work well for **3–12 players** in 5–10 minutes.
+- Tone: fun, slightly snarky, but safe for work.
+
+### Core Concept
+
+An AI-powered party game where players write meme captions for random cat pictures and have them judged by an LLM (Gemini 2.5 Pro or similar with a Gordon Ramsey sense of humor. 
+
+The flow is similar to pointingpoker.com:
+
+- Host opens an **admin page** (e.g. `/admin` or root).
+- Host clicks **“Start session”**; a **session code/link** is generated.
+- Host shares that link with players (e.g. `/session/{code}`).
+- Everyone joins via browser; no accounts, no install.
+
+### Game Loop
+
+Implement a minimal but complete game loop:
+
+1. **Session creation**
+   - Host clicks “Start session”.
+   - Backend generates a short **session ID** (e.g. 6 alphanumeric chars).
+   - Store session state in memory or a lightweight DB (DuckDB / SQLite / in-memory dict is fine for v1).
+   - Show host:
+     - Session link (e.g. `https://catcaptions.app/ABC123`)
+     - Player count
+     - Controls: “Start round”, “End game”, maybe “Reset session”.
+
+2. **Join as player**
+   - Players open the invite link or enter a session code.
+   - They choose a **display name** (no auth, just a simple text field).
+   - Show lobby UI:
+     - Session code
+     - List of connected players
+     - Status: “Waiting for host to start the round…”
+
+3. **Round start**
+   - When host clicks **“Start round”**:
+     - Fetch a **random cat image** (e.g. from TheCatAPI or a local /static/cats folder for dev).
+     - Broadcast the same image to all connected players.
+     - Start a **round timer** (default 45s; make configurable).
+   - UI for players:
+     - Cat image
+     - Single caption textbox
+     - Hard limit of **15 words** per caption (enforce in UI + backend).
+
+4. **Caption submission**
+   - Each player may submit **exactly one caption per round**.
+   - Disable input after:
+     - The player submits, or
+     - The round timer expires.
+   - Handle late submissions gracefully:
+     - If submitted after timer, ignore it and show a small “Too late!” message.
+
+5. **AI judging**
+   - Once the round timer is over (or all players submitted):
+     - Collect all captions for that session/round.
+     - Call the LLM **once**, asking it to:
+       - Rate each caption from **0–10** on:
+         - Humor in a Gordon Ramsey harshness style
+         - Relevance to the cat image
+       - Break ties if possible (“be ruthlessly honest, avoid ties”).
+       - Optionally add a short **roast comment** per caption in “roast mode”.
+   - Design the prompt carefully:
+     - Include the image description or image URL.
+     - Include all captions in a structured list.
+     - Ask for a **machine-readable JSON** response with:
+       - player_name
+       - caption
+       - score (0–10)
+       - optional roast_comment
+
+6. **Results & scoreboard**
+   - Show a **results screen** to both host and players:
+     - The cat image
+     - A table of:
+       - Player name
+       - Caption
+       - AI score
+       - Roast comment
+     - Highlight the **round winner**.
+   - Persist scores by session in a simple DB (DuckDB/SQLite is fine):
+     - `players(session_id, player_id, name)`
+     - `rounds(session_id, round_number, image_id, started_at)`
+     - `captions(session_id, round_number, player_id, caption, score, roast_comment)`
+   - Show a **running scoreboard** per session:
+     - Total points per player (sum of scores)
+     - Rank players by total score.
+
+7. **Game end**
+   - After **3 rounds** (default, configurable):
+     - Show final results:
+       - Sorted leaderboard
+       - Confetti / “Winner: {name}, Supreme Cat Meme Champion”
+   - Allow host to:
+     - Start a new game with same session code, or
+     - End session (clearing memory / marking as finished).
+
+### Non-Goals (for this 2-day version)
+
+- No complex auth system (just ephemeral names).
+- No persistent user accounts or social graphs.
+- No production-grade scaling; this is a **demo / workshop game**.
+- No advanced moderation pipeline beyond basic prompt safety.
+
+### UX Requirements
+
+- Must work reasonably on desktop + mobile browser.
+- Simple layout:
+  - Host/admin view: controls + preview + scoreboard.
+  - Player view: cat image, caption box, status messages, scoreboard.
+- Handle edge cases cleanly:
+  - Players joining mid-round → they can start playing next round.
+  - Player disconnects → their existing scores remain.
+  - LLM failure → provide a simple fallback scoring mechanism (e.g. random but deterministic per caption).
+
+### Tech Stack & Implementation Hints
+
+- Language: **Python**
+- Framework for UI: **Streamlit** or **Gradio** — pick one and commit.
+  - For a pointingpoker-style URL like `catcaptions.streamlit.app`, Streamlit is fine.
+- LLM: Use **Gemini 2.5 Pro** (or a drop-in equivalent) via the official Python client.
+- Images:
+  - Prefer **TheCatAPI** for random cats in real runs.
+  - Provide a **local fallback** set (`/cats/*.jpg`) for offline/dev.
+- Storage:
+  - Use **DuckDB** (or SQLite) for scores; in-memory is enough for now, but keep the schema clean.
+
+### Quality & Structure
+
+- Keep functions small and focused.
+- Separate concerns:
+  - `llm.py`: prompt + scoring.
+  - `images.py`: cat image fetching.
+  - `storage.py`: DB access.
+  - `app.py` or `main.py`: UI + game flow.
+- Add a minimal test or at least a `fake_llm` mode so the game runs without an API key.
+
+### Deliverables for this iteration
+
+- A working web app where:
+  - A host can create a session and share a join link.
+  - At least 3 players can join, play 3–5 rounds, and see a final winner.
+- Updated `README.md` with:
+  - Game description
+  - Setup
+  - Env vars required
+  - How to run locally
+- `AGENTS.md` in the repo root with project context + basic dev instructions.
+
+Follow these rules strictly and prefer **simple, robust solutions** over clever abstractions.

@@ -1,0 +1,239 @@
+# .cursorrules — Cat Caption Cage Match (v2: Web App)
+# Stack: Next.js (App Router) + FastAPI + Postgres + Socket.IO
+#
+# Source of truth (project docs):
+# - BUILD_PROMPT.md
+# - API_CONTRACT.md
+# - FRONTEND_MAP.md
+#
+# IMPORTANT PRODUCT DECISION:
+# - NO round time limit for now.
+# - Do NOT implement timers, countdown UI, endsAt/deadlines, tick events, or “Too late!” logic.
+# - A round ends when the host reveals results OR optionally when all players have submitted.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+0) CONTEXT / PERSONA (KEEP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Target users: Scrum Masters, Product Owners, PMs, and distributed dev teams using Zoom/Meet/Teams.
+- Must be a quick icebreaker (5–10 minutes), 3–12 players.
+- Zero learning curve: type a caption, submit, laugh.
+- Tone: fun, slightly snarky, Gordon Ramsay energy, BUT safe for work.
+
+Flow inspiration to preserve:
+- Similar to pointingpoker.com
+- Host opens an admin/host view.
+- Host starts a session → shares a session link/code.
+- Players join via browser; no accounts, no install.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1) CORE GAME RULES (DO NOT CHANGE WITHOUT EXPLICIT DECISION)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Session:
+- Host creates a session and gets a short join code (6 uppercase alphanumerics).
+- Session link format is stable (e.g., /s/{code}).
+
+Players:
+- No auth/accounts. Players choose a display name.
+- Display name constraints: trim whitespace; reasonable length (e.g., 2–24 chars).
+
+Captions:
+- Hard limit: max 15 words.
+- Enforce BOTH client-side and server-side.
+- Each player submits exactly one caption per round (locked after submit).
+
+Round progression (NO TIMER):
+- Host starts round → server selects a random cat image → broadcast to all players.
+- Players submit captions; input locks per player after submission.
+- Round ends when:
+  - Host triggers reveal, OR
+  - (optional) server auto-reveals when all players have submitted.
+- Do NOT implement “late submission” states (because there is no deadline).
+
+Scoring:
+- Judge captions with an LLM (Gemini 2.5 Pro or comparable).
+- Prefer a single LLM call per round, returning machine-readable JSON.
+- Score 0–10 (harsh, no ties if possible).
+- Include an optional short roast per caption (snarky, SFW).
+
+Failure mode:
+- If LLM fails, provide fallback scoring (deterministic or simple) so gameplay continues.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2) ARCHITECTURE (NEW, BUT KEEP SEPARATION OF CONCERNS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Monorepo preferred:
+- /apps/web        Next.js UI (TypeScript, Tailwind, shadcn/ui)
+- /services/api    FastAPI + Socket.IO server + LLM + orchestration
+- /packages/shared Shared types/schemas (optional but recommended)
+
+Separation of concerns (preserve your convention):
+- Backend modules remain split:
+  - llm.py      prompt + scoring + fallback
+  - images.py   cat image fetching (TheCatAPI + local fallback)
+  - storage.py  persistence via Storage interface (Postgres implementation)
+  - app/main.py FastAPI + Socket.IO wiring + orchestration
+
+Frontend never calls LLM providers or TheCatAPI directly.
+All keys remain server-side.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3) BACKEND (FASTAPI + SOCKET.IO) — RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Backend responsibilities:
+- Create sessions and issue join codes
+- Manage players, rounds, captions, scores
+- Broadcast state changes in realtime (Socket.IO)
+- Persist state in Postgres
+- Enforce caption rules (15 words, one per round)
+
+Minimal REST routes (match API_CONTRACT.md):
+- GET  /api/health
+- POST /api/sessions
+- GET  /api/sessions/{sessionCode}
+- POST /api/sessions/{sessionCode}/players
+- POST /api/sessions/{sessionCode}/rounds
+- POST /api/sessions/{sessionCode}/rounds/{roundId}/reveal
+- POST /api/sessions/{sessionCode}/rounds/{roundId}/captions
+- POST /api/sessions/{sessionCode}/end
+
+Minimal Socket.IO contract (match API_CONTRACT.md):
+- Namespace: /ws
+- Client → Server:
+  - session:join
+  - host:start_round
+  - player:submit_caption
+  - host:reveal_round
+- Server → Client:
+  - session:state
+  - round:started
+  - caption:locked
+  - round:revealed
+  - error
+
+NO TIMER IMPLEMENTATION:
+- Do not add roundSeconds settings, startsAt/endsAt deadlines, round:tick, or any countdown logic.
+
+Lightweight auth/token model:
+- No accounts.
+- On join: server issues playerToken (signed) + playerId.
+- Host actions require Bearer playerToken and isHost=true.
+- Submission requires Bearer playerToken for the submitting player.
+- Centralize auth checks (dependency/middleware).
+
+Input validation:
+- displayName: length + allowed chars (keep it permissive but safe)
+- caption: max 15 words + max chars (e.g., <= 140)
+- Always trim; reject empty.
+
+Abuse resistance (minimum):
+- Rate limit join attempts per IP.
+- Rate limit submissions per player/round.
+- Do not over-engineer moderation; keep roasts SFW.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4) STORAGE INTERFACE (DUCKDB REPLACED BY POSTGRES)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Goal:
+- Game orchestration must not depend on a specific DB library.
+- Implement a Storage abstraction.
+
+Required:
+- Storage interface (port)
+- PostgresStorage implementation (SQLAlchemy 2.x async + asyncpg)
+- InMemoryStorage for tests/dev
+
+Tables (minimum viable):
+- sessions
+- players
+- rounds
+- captions
+- scores (or store scores on captions)
+
+Migrations:
+- Use Alembic. Any schema change = migration.
+
+Do not push core business rules into complex SQL unless there’s a clear payoff.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5) FRONTEND (NEXT.JS) — RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+UI requirements:
+- Responsive (mobile + desktop).
+- Simple layout with clear next actions.
+- Host/admin view and player view are distinct and obvious.
+- Works well on Zoom screen-share.
+
+Page map (align to FRONTEND_MAP.md; keep admin concept):
+- /                   Landing (Host / Join)
+- /host               Create session (host name)
+- /join               Join session (code + name)
+- /s/[code]/host       Host lobby + controls + game screens
+- /s/[code]/play       Player lobby + game screens
+
+Core components:
+- SessionCodeBadge (copy to clipboard)
+- PlayerList (live)
+- ConnectionStatus (connected/reconnecting/offline)
+- CaptionComposer (15-word counter + validation)
+- ResultsGrid + CaptionCard (score + roast)
+- LeaderboardTable
+
+Networking:
+- REST for:
+  - create session
+  - join session
+  - fetch state snapshot on load/reconnect
+- Socket.IO for:
+  - live lobby updates
+  - round started
+  - caption locked
+  - round revealed + leaderboard updates
+
+NO TIMER UI:
+- Do not implement countdowns, seconds remaining, or “Too late!” messages.
+
+Accessibility:
+- Visible focus rings
+- Keyboard-only nav works
+- Reduced motion support
+- High contrast option (AA minimum, prefer AAA)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6) QUALITY / DEV PRACTICES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Keep it simple:
+- Small functions, clear names.
+- Avoid clever abstractions that slow the team down.
+- Don’t refactor unrelated code in the same change.
+
+Testing (minimal but meaningful):
+- Backend:
+  - caption validation (15 words)
+  - Storage methods for session/round lifecycle
+  - “one submission per player per round”
+- Add fake_llm mode so the app runs without API keys.
+
+Observability:
+- Backend logs include sessionCode + roundId when relevant.
+- Handle errors gracefully and unblock UI states.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7) DEPLOYMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Frontend: Vercel
+- Backend: Render or Fly.io
+- Database: managed Postgres
+
+Env vars:
+Backend:
+- DATABASE_URL
+- APP_SECRET
+- CORS_ORIGINS
+- THECATAPI_KEY (optional)
+- LLM_PROVIDER + provider key(s)
+
+Frontend:
+- NEXT_PUBLIC_API_BASE_URL
+- NEXT_PUBLIC_SOCKET_URL
+
+Never hardcode secrets or production URLs.
